@@ -1,0 +1,61 @@
+# Hermes Agent — config template for the Pi 5 deployment.
+#
+# Copy to the host as ~/.hermes/config.yaml (mounted read-write at /opt/data).
+# This file holds NON-SECRET behaviour only. Secrets (API keys, bot token) go
+# in ~/.hermes/.env — see .env.example.
+#
+# This is a trimmed starting point. The upstream repo ships a full, annotated
+# `cli-config.yaml.example` with every option (MCP servers, compression,
+# subagents, themes, per-platform tool sets, etc.). Diff against it after an
+# upstream bump: it is the authoritative schema.
+
+# --- Model / provider -------------------------------------------------------
+# provider/name pairs use the "<provider>/<model>" form the CLI expects.
+# Gemini is primary here, so billing goes to GOOGLE_API_KEY only. Anthropic is
+# NOT called at all — leave ANTHROPIC_API_KEY unset to be sure.
+model:
+  provider: google
+  name: google/gemini-3.1-pro
+
+# Ordered fallbacks used when the primary provider errors or rate-limits.
+# Kept on Google (cheaper Flash tier) so nothing ever routes to Anthropic.
+# Keys for whichever providers you list must exist in ~/.hermes/.env.
+fallback_providers:
+  - google/gemini-3.6-flash
+
+# --- Terminal execution -----------------------------------------------------
+# ONE global backend: local | ssh | docker | singularity | modal | daytona.
+# `docker` = spin up a throwaway sandbox PER TASK via the ROOTLESS Podman socket
+# (DOCKER_HOST in .env). Code runs in the sandbox, not in the agent — a wrong or
+# malicious action destroys the sandbox, not your work. See docs/ARCHITECTURE.md.
+#   - For early hands-on testing, `local` (runs in this container) is fine.
+#   - For heavy builds or x86-only toolchains, switch to `daytona`/`modal`
+#     (cloud sandbox) — a config change, no re-architecture.
+# Give each sandbox only the project dir it needs — never auto-mount $HOME.
+terminal:
+  backend: docker
+  # ssh:
+  #   host: <host>
+  #   user: <user>
+  #   # key auth only; never inline a password here
+
+# --- Persistent memory ------------------------------------------------------
+# Bounded notes injected each session. Files live under /opt/data (~/.hermes).
+memory:
+  enabled: true
+  notes_file: MEMORY.md      # agent's own bounded notes (~800 tokens)
+  user_file: USER.md         # user profile (~500 tokens)
+
+# --- Messaging interface ----------------------------------------------------
+# Telegram is the only interface for this deployment (outbound long-polling).
+# Token is TELEGRAM_BOT_TOKEN in ~/.hermes/.env, NOT here.
+platforms:
+  telegram:
+    enabled: true
+
+# --- Dashboard --------------------------------------------------------------
+# The dashboard is NOT run by this stack (single-service by design). If you
+# ever enable it, bind it to loopback only and never set an insecure flag.
+dashboard:
+  enabled: false
+  host: 127.0.0.1

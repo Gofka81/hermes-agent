@@ -1,1 +1,22 @@
+# Secrets — NEVER commit.
 .env
+*.env
+!.env.example
+
+# Live host config & agent state (lives under ~/.hermes on the Pi).
+config.yaml
+.hermes/
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# Session trajectories / logs.
+logs/
+*.log
+
+# OS / editor cruft.
+.DS_Store
+.idea/
+.vscode/
+docs/
