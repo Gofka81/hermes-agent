@@ -19,6 +19,7 @@
 services:
   hermes:
     image: hermes-agent:latest
+    pull_policy: never
     container_name: hermes
     restart: unless-stopped
 
