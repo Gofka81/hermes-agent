@@ -24,7 +24,11 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 # Pin the server version for reproducible builds; bump deliberately.
-ARG SUPERMEMORY_VERSION=0.0.6
+# 0.0.7-rc.2: arm64 ingest/rivet fix — 0.0.6 left documents stuck status=queued
+# (the @rivetkit/rivetkit-wasm load error broke the ingest→index pipeline, so
+# semantic search always returned 0). rc.2 is a prerelease; revisit when a newer
+# stable ships.
+ARG SUPERMEMORY_VERSION=0.0.7-rc.2
 
 # Install non-interactively: no auto-start, no API-key prompt. Binary lands in
 # /opt/supermemory/bin, wrapper in /usr/local/bin (unused — we exec the binary
