@@ -1,8 +1,12 @@
-# Hermes Agent — single-service stack for Raspberry Pi 5.
+# Hermes Agent — stack for Raspberry Pi 5.
 #
 # Deploy as its OWN Portainer stack. Outbound-only: Telegram long-polling + the
-# cloud LLM (Gemini) API are both outbound, so there are NO published ports and
-# NO inbound access. Keep it OFF `public-net` and off the Cloudflare tunnel.
+# cloud LLM API are both outbound, so there are NO published ports and NO
+# inbound access. Keep it OFF `public-net` and off the Cloudflare tunnel.
+#
+# Two services: `hermes` (the agent) and `supermemory` (self-hosted semantic
+# memory provider). Supermemory is INTERNAL-ONLY — it publishes no ports and
+# shares hermes's network namespace (see its block below).
 #
 # Execution model (see docs/ARCHITECTURE.md): the agent runs AS the unprivileged
 # `hermes-runner` user (uid 1000) and drives code execution through that user's
@@ -30,26 +34,26 @@ services:
     volumes:
       # Persistent config.yaml, .env, MEMORY.md, USER.md, skills, session DB.
       # DO NOT remove or relabel — this is the agent's entire state.
-      - ~/.hermes:/opt/data
+      # ABSOLUTE PATH: Portainer does NOT expand `~`, so a `~/.hermes` here
+      # silently resolves to `/.hermes` (empty) and the agent boots blank.
+      - /home/lantonyk/.hermes:/opt/data
 
-      # ROOTLESS Podman socket (owned by hermes-runner, uid 1000). This is how
-      # `terminal.backend: docker` spins up throwaway sandboxes to run code.
-      # Prereqs on the host (run as hermes-runner):
-      #   loginctl enable-linger hermes-runner
-      #   systemctl --user enable --now podman.socket
-      # NEVER replace this with /var/run/docker.sock — that would be root.
-      - /run/user/1000/podman/podman.sock:/run/user/1000/podman/podman.sock
+      # ROOTLESS Podman socket — for `terminal.backend: docker`. DISABLED until
+      # Podman is installed + its user socket is enabled (see docs/ARCHITECTURE.md):
+      #   sudo apt install -y podman
+      #   systemctl --user enable --now podman.socket   # as uid-1000 user, not sudo
+      #   loginctl enable-linger $USER
+      # Until then run `terminal.backend: local`. NEVER mount /var/run/docker.sock.
+      # - /run/user/1000/podman/podman.sock:/run/user/1000/podman/podman.sock
 
     environment:
-      # Run the gateway as uid/gid 1000 so it can access the rootless socket
-      # above AND so ~/.hermes files stay owned by hermes-runner.
-      # `chown -R 1000:1000 ~/.hermes` on the host to match.
+      # Run the gateway as uid/gid 1000 so ~/.hermes files stay owned by that user
+      # (and, once enabled, so it can access the rootless Podman socket).
       - HERMES_UID=${HERMES_UID:-1000}
       - HERMES_GID=${HERMES_GID:-1000}
 
-      # Point Hermes' docker backend at the rootless Podman socket (Docker-API
-      # compatible). Must match the mounted path above.
-      - DOCKER_HOST=unix:///run/user/1000/podman/podman.sock
+      # Re-enable together with the socket mount above once Podman is set up:
+      # - DOCKER_HOST=unix:///run/user/1000/podman/podman.sock
 
     command: ["gateway", "run"]
 
@@ -63,13 +67,84 @@ services:
 
     # Pi 5 resource guards. Tune to taste; the agent is network/IO-bound (work
     # happens in the cloud LLM + in the sandboxes it spawns, not in this process).
+    # Bumped 1536M -> 3072M: the old 1.5G cap was already ~50% used AND the host
+    # was swapping ~740M, so it was tight even before adding a memory provider.
+    # Host has ~5.7G available on this 8GB Pi 5, so 3G is safe and leaves room for
+    # the OS, a memory-provider service, and Podman.
     deploy:
       resources:
         limits:
           cpus: "3.0"
-          memory: 1536M
+          memory: 3072M
         reservations:
-          memory: 512M
+          memory: 1024M
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # --- Memory provider (Supermemory) ---------------------------------------
+  # Self-hosted semantic memory for the agent. Its OWN container (own volume,
+  # own RAM budget), but it SHARES hermes's network namespace: the server
+  # hardwires its listener to localhost:6767 with NO bind-address override
+  # (verified on v0.0.6), so the only way hermes can reach it is to share
+  # localhost. Internal-only — NO published ports, nothing on the LAN.
+  #
+  # Portainer builds this image from the repo on redeploy (same GitOps `build:`
+  # pattern as the job-radar stack). No manual pre-build needed.
+  supermemory:
+    build:
+      context: .
+      dockerfile: Dockerfile.supermemory
+    image: hermes-supermemory:latest    # tag for the locally-built image
+    container_name: supermemory
+    restart: unless-stopped
+    depends_on:
+      - hermes                       # hermes's network namespace must exist first
+
+    # Share hermes's network stack → hermes reaches it at http://localhost:6767.
+    # With this set, the service must NOT declare its own `networks:` or `ports:`.
+    network_mode: "service:hermes"
+
+    # Run as the same unprivileged uid as the host owner so /data stays owned by
+    # lantonyk (uid 1000) and is easy to back up. The image opened the binary
+    # read/execute for this user.
+    user: "1000:1000"
+
+    volumes:
+      # Encrypted memory store + local embedding-model cache. ABSOLUTE host path
+      # (Portainer does not expand ~). Create + chown first:
+      #   mkdir -p /home/lantonyk/.supermemory-data
+      #   sudo chown -R 1000:1000 /home/lantonyk/.supermemory-data
+      - /home/lantonyk/.supermemory-data:/data
+
+    environment:
+      # Memory-EXTRACTION LLM (distills chat turns into stored facts — NOT the
+      # chat model; Claude still runs the conversation). Free Groq key, injected
+      # at runtime, never baked into the image. Set it as a Portainer stack env
+      # var (or a compose-adjacent .env for `docker compose`). Deploy FAILS loud
+      # if it is unset.
+      - GROQ_API_KEY=${GROQ_API_KEY:?set GROQ_API_KEY as a Portainer stack / compose env var}
+      - SUPERMEMORY_DATA_DIR=/data
+      - HOME=/data
+      - SUPERMEMORY_DISABLE_TELEMETRY=1
+      # Bound embedding RAM so ingest can't blow the container limit below.
+      - SUPERMEMORY_EMBEDDING_RAM_LIMIT=1gb
+
+    security_opt:
+      - no-new-privileges:true
+
+    # Own RAM budget: ~1.1G baseline + up to 1G ingest. Separate cgroup from
+    # hermes despite the shared network namespace. Host has ~5.7G free.
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2560M
+        reservations:
+          memory: 1024M
 
     logging:
       driver: json-file

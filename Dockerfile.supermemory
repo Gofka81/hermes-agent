@@ -1,0 +1,54 @@
+# syntax=docker/dockerfile:1
+#
+# Supermemory memory-provider server for the hermes stack (arm64 / Pi 5).
+#
+# Supermemory ships as a single self-contained Bun binary ("no Docker needed"),
+# so this image just runs the official, sha256-verified installer at build time
+# and launches the server. It is deployed as a SECOND container in the hermes
+# stack that SHARES hermes's network namespace (network_mode: service:hermes),
+# because the server hardwires its listener to localhost:6767 — there is no
+# bind-address override (verified on v0.0.6: SUPERMEMORY_HOST is ignored).
+#
+# Built automatically by the compose `build:` directive when Portainer deploys
+# the stack (arm64 — the installer picks the binary from `uname -m`). To build
+# it by hand on the Pi:  docker build -f Dockerfile.supermemory -t hermes-supermemory:latest .
+#
+# The GROQ_API_KEY (memory-extraction LLM) is injected at RUNTIME via compose
+# env — NEVER baked into the image.
+
+FROM debian:bookworm-slim
+
+# Installer needs curl + CA certs; the Bun binary needs glibc (bookworm = 2.36).
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+# Pin the server version for reproducible builds; bump deliberately.
+ARG SUPERMEMORY_VERSION=0.0.6
+
+# Install non-interactively: no auto-start, no API-key prompt. Binary lands in
+# /opt/supermemory/bin, wrapper in /usr/local/bin (unused — we exec the binary
+# directly since env comes from compose).
+ENV SUPERMEMORY_INSTALL_DIR=/opt/supermemory \
+    SUPERMEMORY_BIN_DIR=/usr/local/bin
+RUN curl -fsSL https://supermemory.ai/install -o /tmp/sm_install.sh \
+ && SUPERMEMORY_NO_START=1 SUPERMEMORY_NO_PROMPT=1 \
+      bash /tmp/sm_install.sh "${SUPERMEMORY_VERSION}" \
+ && rm -f /tmp/sm_install.sh \
+ # The installer locks its dir to owner-only (chmod go-rwx); reopen it read +
+ # execute so the non-root runtime user (uid 1000, set in compose) can reach it.
+ && chmod -R a+rX /opt/supermemory
+
+# Runtime defaults. The encrypted store + embedding-model cache (bge-base,
+# ~106MB, downloaded once) live on the mounted /data volume; HOME points there
+# too so no stray caches escape the volume. DATA_DIR is ABSOLUTE on purpose
+# (the relative `./.supermemory` default is the same footgun as `/.hermes`).
+ENV SUPERMEMORY_DATA_DIR=/data \
+    HOME=/data \
+    SUPERMEMORY_DISABLE_TELEMETRY=1
+VOLUME ["/data"]
+
+# Documentation only — NOT published. hermes reaches it via shared-netns localhost.
+EXPOSE 6767
+
+CMD ["/opt/supermemory/bin/supermemory-server"]
