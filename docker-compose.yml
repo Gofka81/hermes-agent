@@ -126,20 +126,20 @@ services:
       - /home/lantonyk/.supermemory-data:/data
 
     environment:
-      # Memory-EXTRACTION LLM (distills stored chunks into memories — NOT the chat
-      # model; Claude still runs the conversation). Routed through Groq's
-      # OpenAI-COMPATIBLE endpoint (OPENAI_* vars) rather than the native GROQ_API_KEY
-      # path ON PURPOSE: the native path pins a Groq model that has since been
-      # deprecated, so the memory agent failed instantly (72ms, HTTP 400) and produced
-      # 0 memories. OPENAI_MODEL lets us pin a CURRENT Groq model. The Portainer stack
-      # var is still named GROQ_API_KEY (holds the gsk_ key); deploy FAILS loud if unset.
-      - OPENAI_API_KEY=${GROQ_API_KEY:?set GROQ_API_KEY as a Portainer stack / compose env var}
-      - OPENAI_BASE_URL=https://api.groq.com/openai/v1
-      # Current Groq chat models (verified against /v1/models). gpt-oss = OpenAI's open
-      # models on Groq, best fit for the memory agent's OpenAI-style structured calls.
-      - OPENAI_MODEL=openai/gpt-oss-120b
-      - OPENAI_TEXT_MODEL=openai/gpt-oss-120b
-      - OPENAI_FAST_MODEL=openai/gpt-oss-20b
+      # Memory-EXTRACTION LLM (distills stored chunks into searchable memories — NOT the
+      # chat model; Claude still runs the conversation). Routed through DEEPSEEK via its
+      # OpenAI-COMPATIBLE endpoint (OPENAI_* vars). WHY DeepSeek: every Groq model
+      # (gpt-oss, llama-3.3) crashed the self-hosted memory agent INSTANTLY (~66ms, 0
+      # memories) — Groq's structured-output support isn't strict enough for the agent's
+      # JSON-schema calls. DeepSeek (a faithful OpenAI-compatible impl) completes the
+      # agent cleanly (~3.7s, real memories, semantic search returns content) and is
+      # extremely cheap. Verified end-to-end in an isolated container 2026-07-31.
+      # Set DEEPSEEK_API_KEY (sk-...) as a Portainer stack env var; deploy FAILS loud if unset.
+      - OPENAI_API_KEY=${DEEPSEEK_API_KEY:?set DEEPSEEK_API_KEY as a Portainer stack / compose env var}
+      - OPENAI_BASE_URL=https://api.deepseek.com
+      - OPENAI_MODEL=deepseek-chat
+      - OPENAI_TEXT_MODEL=deepseek-chat
+      - OPENAI_FAST_MODEL=deepseek-chat
       - SUPERMEMORY_DATA_DIR=/data
       - HOME=/data
       - SUPERMEMORY_DISABLE_TELEMETRY=1
