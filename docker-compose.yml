@@ -38,13 +38,11 @@ services:
       # silently resolves to `/.hermes` (empty) and the agent boots blank.
       - /home/lantonyk/.hermes:/opt/data
 
-      # ROOTLESS Podman socket — for `terminal.backend: docker`. DISABLED until
-      # Podman is installed + its user socket is enabled (see docs/ARCHITECTURE.md):
-      #   sudo apt install -y podman
-      #   systemctl --user enable --now podman.socket   # as uid-1000 user, not sudo
-      #   loginctl enable-linger $USER
-      # Until then run `terminal.backend: local`. NEVER mount /var/run/docker.sock.
-      # - /run/user/1000/podman/podman.sock:/run/user/1000/podman/podman.sock
+      # Docker socket — the hermes-docker-gate plugin drives Docker through this.
+      # Access is gated IN-PROCESS by the plugin: reads are redacted, writes require
+      # Telegram approval, and the raw terminal is blocked from touching docker.
+      # Deliberately NO socket-proxy. uid-1000 reaches the socket via group_add below.
+      - /var/run/docker.sock:/var/run/docker.sock
 
     environment:
       # Run the gateway as uid/gid 1000 so ~/.hermes files stay owned by that user
@@ -52,11 +50,14 @@ services:
       - HERMES_UID=${HERMES_UID:-1000}
       - HERMES_GID=${HERMES_GID:-1000}
 
-      # Docker access for troubleshooting — via the READ-ONLY docker-socket-proxy
-      # below, NOT the raw socket. hermes ships the `docker` CLI; this points it at
-      # the proxy so `docker ps/logs/inspect/stats` work but every write (run/create/
-      # stop/network) is denied by the proxy (POST=0). STEP 1 = read-only only.
-      - DOCKER_HOST=tcp://docker-proxy:2375
+      # Point the docker CLI at the mounted socket (no proxy). Access is gated
+      # in-process by the hermes-docker-gate plugin.
+      - DOCKER_HOST=unix:///var/run/docker.sock
+
+    # Host 'docker' group so the uid-1000 gateway can access the mounted socket.
+    # 985 = `stat -c %g /var/run/docker.sock` on this Pi — update if it changes.
+    group_add:
+      - "985"
 
     command: ["gateway", "run"]
 
@@ -167,62 +168,6 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-
-  # --- Docker socket proxy (READ-ONLY) --------------------------------------
-  # Lets hermes read container logs/status/config for troubleshooting WITHOUT
-  # handing it the root docker socket. This is the ONE place the real socket is
-  # mounted — into this hardened haproxy filter, mounted READ-ONLY, never into
-  # hermes. Everything is GET-only: POST=0 blocks create/start/stop/kill/exec and
-  # any other write, so a compromised agent can inspect but cannot change anything.
-  # STEP 2 (later) will add a SECOND, write-scoped proxy behind an approval hook.
-  # CAVEAT: read-only still exposes other containers' env (secrets) via `inspect`.
-  docker-proxy:
-    image: ghcr.io/tecnativa/docker-socket-proxy:latest
-    container_name: docker-proxy
-    restart: unless-stopped
-    environment:
-      # --- allow (GET) ---
-      - CONTAINERS=1        # ps / inspect / logs / stats / top
-      - IMAGES=1            # image list/inspect
-      - NETWORKS=1          # network list/inspect (READ — creation is POST, blocked)
-      - VOLUMES=1           # volume list/inspect (READ)
-      - INFO=1
-      - VERSION=1
-      - EVENTS=1
-      - PING=1
-      # --- deny (writes + dangerous) ---
-      - POST=0              # CRITICAL: no writes at all (create/start/stop/kill/rm)
-      - EXEC=0              # no docker exec into containers
-      - AUTH=0
-      - SECRETS=0
-      - SERVICES=0
-      - SWARM=0
-      - NODES=0
-      - TASKS=0
-      - CONFIGS=0
-      - PLUGINS=0
-      - SYSTEM=0
-      - DISTRIBUTION=0
-      - COMMIT=0
-      - BUILD=0
-    volumes:
-      # The real socket — READ-ONLY, and ONLY here (never in hermes). This is the
-      # sanctioned mitigation for the "never mount docker.sock into the agent" rule.
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-    networks:
-      - hermes-net
-    security_opt:
-      - no-new-privileges:true
-    deploy:
-      resources:
-        limits:
-          cpus: "0.5"
-          memory: 64M
-    logging:
-      driver: json-file
-      options:
-        max-size: "5m"
-        max-file: "2"
 
 networks:
   hermes-net:
